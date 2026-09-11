@@ -1,7 +1,7 @@
 {
   "name": "vs-code-devcontainer-gui",
   "displayName": "Devcontainer GUI",
-  "description": "Gestisci in modo semplice le impostazioni dei devcontainer basati su Docker Compose.",
+  "description": "Manage Docker Compose-based devcontainer settings with ease.",
   "version": "0.0.1",
   "publisher": "gitdialbertoannunziata",
   "license": "MIT",
@@ -48,34 +48,34 @@
       "devcontainerGui": [
         {
           "id": "devcontainerGui.configView",
-          "name": "Configurazione risolta"
+          "name": "Resolved Configuration"
         }
       ]
     },
     "commands": [
       {
         "command": "devcontainerGui.refresh",
-        "title": "Devcontainer: aggiorna configurazione",
+        "title": "Devcontainer: Refresh Configuration",
         "icon": "$(refresh)"
       },
       {
         "command": "devcontainerGui.startService",
-        "title": "Devcontainer: avvia servizio",
+        "title": "Devcontainer: Start Service",
         "icon": "$(play)"
       },
       {
         "command": "devcontainerGui.stopService",
-        "title": "Devcontainer: ferma servizio",
+        "title": "Devcontainer: Stop Service",
         "icon": "$(stop)"
       },
       {
         "command": "devcontainerGui.restartService",
-        "title": "Devcontainer: riavvia servizio",
+        "title": "Devcontainer: Restart Service",
         "icon": "$(sync)"
       },
       {
         "command": "devcontainerGui.viewLogs",
-        "title": "Devcontainer: mostra log servizio",
+        "title": "Devcontainer: Show Service Logs",
         "icon": "$(output)"
       }
     ],

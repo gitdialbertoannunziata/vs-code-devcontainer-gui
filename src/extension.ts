@@ -54,11 +54,12 @@ async function runLifecycleCommand(node: TreeNode, action: ComposeLifecycleActio
 }
 
 /**
- * Non usiamo un terminale integrato: anche con extensionKind "ui", i terminali
- * creati da vscode.window.createTerminal girano nel contesto del workspace
- * (dentro al container se la finestra è attaccata), mentre `docker compose`
- * va invocato sull'host con i path host — esattamente come start/stop/restart.
- * Per lo streaming usiamo quindi un processo host + un Output Channel.
+ * We don't use an integrated terminal: even with extensionKind "ui",
+ * terminals created via vscode.window.createTerminal run in the workspace's
+ * context (inside the container if the window is attached), while
+ * `docker compose` needs to be invoked on the host with host paths — exactly
+ * like start/stop/restart. So we stream via a host process + an Output
+ * Channel instead.
  */
 function viewServiceLogs(node: TreeNode, logStreams: Map<string, LogStream>): void {
 	if (!isServiceNode(node)) {
@@ -81,7 +82,7 @@ function viewServiceLogs(node: TreeNode, logStreams: Map<string, LogStream>): vo
 
 	child.stdout.on('data', (chunk: Buffer) => channel.append(chunk.toString()));
 	child.stderr.on('data', (chunk: Buffer) => channel.append(chunk.toString()));
-	child.on('error', err => channel.appendLine(`\n[errore avvio "docker compose logs": ${err.message}]`));
+	child.on('error', err => channel.appendLine(`\n[failed to start "docker compose logs": ${err.message}]`));
 	child.on('exit', () => logStreams.delete(key));
 
 	logStreams.set(key, { channel, process: child });
@@ -92,7 +93,7 @@ async function editEnvVar(node: TreeNode, provider: ConfigTreeProvider): Promise
 		return;
 	}
 	const newValue = await vscode.window.showInputBox({
-		prompt: `Nuovo valore per ${node.key} (servizio "${node.serviceName}")`,
+		prompt: `New value for ${node.key} (service "${node.serviceName}")`,
 		value: node.value
 	});
 	if (newValue === undefined || newValue === node.value) {
@@ -100,14 +101,14 @@ async function editEnvVar(node: TreeNode, provider: ConfigTreeProvider): Promise
 	}
 	try {
 		await setEnvironmentVariable(node.source, node.serviceName, node.key, newValue);
-		// Un file .env viene riletto solo ricreando il container: per il service
-		// principale evitiamo di suggerire un recreate diretto (romperebbe la
-		// connessione della finestra attaccata) e rimandiamo al rebuild ufficiale.
+		// A .env file is only re-read when the container is recreated: for the
+		// main service we avoid suggesting a direct recreate (it would break the
+		// attached window's connection) and point to the official rebuild instead.
 		const needsRebuild = node.source.kind === 'envFile' || node.isMainService;
 		vscode.window.showInformationMessage(
 			needsRebuild
-				? `"${node.key}" aggiornata. Serve un rebuild del devcontainer (comando "Dev Containers: Rebuild Container") perché il cambiamento abbia effetto.`
-				: `"${node.key}" aggiornata. Il container esistente non la vede finché non lo ricrei (docker compose up -d --force-recreate).`
+				? `"${node.key}" updated. The devcontainer needs a rebuild ("Dev Containers: Rebuild Container") for the change to take effect.`
+				: `"${node.key}" updated. The existing container won't see it until it's recreated (docker compose up -d --force-recreate).`
 		);
 	} catch (err) {
 		vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));

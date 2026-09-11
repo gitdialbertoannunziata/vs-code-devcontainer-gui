@@ -17,11 +17,11 @@ export interface ResolvedVolume {
 	type: string;
 	source?: string;
 	target: string;
-	/** true se proviene da workspaceMount/mounts in devcontainer.json e non dal file compose. */
+	/** true if it comes from workspaceMount/mounts in devcontainer.json rather than the compose file. */
 	fromDevcontainerJson?: boolean;
 }
 
-/** Dove scrivere per modificare una variabile: nel compose YAML stesso, o in un file .env referenziato via env_file. */
+/** Where to write to edit a variable: the compose YAML itself, or a .env file referenced via env_file. */
 export type EnvVarSource =
 	| { kind: 'compose'; filePath: string }
 	| { kind: 'envFile'; filePath: string };
@@ -29,25 +29,25 @@ export type EnvVarSource =
 export interface ResolvedService {
 	image?: string;
 	environment: Record<string, string>;
-	/** Per le variabili modificabili (definite letteralmente nel compose o in un env_file), dove scriverle. Le altre (ereditate dall'immagine, da .env di progetto) sono di sola lettura. */
+	/** For editable variables (defined literally in compose or in an env_file), where to write them. Others (inherited from the image, from a project .env) are read-only. */
 	environmentSources: Record<string, EnvVarSource>;
 	ports: ResolvedPort[];
 	volumes: ResolvedVolume[];
-	/** Stato riportato da `docker compose ps` (running, exited, paused, ...), assente se il container non è mai stato creato. */
+	/** Status reported by `docker compose ps` (running, exited, paused, ...), absent if the container was never created. */
 	status?: string;
 }
 
 export interface DevcontainerConfig {
 	devcontainerUri: vscode.Uri;
 	composeFiles: string[];
-	/** Cartella (host) da cui vanno invocati i comandi `docker compose`. */
+	/** Host folder to invoke `docker compose` commands from. */
 	baseDir: string;
-	/** Project name compose reale (es. "itrpricehub_devcontainer"): senza, `ps`/`start`/`stop` non trovano i container già creati dalla CLI Dev Containers. */
+	/** Real compose project name (e.g. "itrpricehub_devcontainer"): without it, `ps`/`start`/`stop` won't find containers already created by the Dev Containers CLI. */
 	projectName: string;
 	mainService?: string;
 	runServices: string[];
 	services: Record<string, ResolvedService>;
-	/** workspaceMount + mounts dichiarati in devcontainer.json, da mostrare sul service principale. */
+	/** workspaceMount + mounts declared in devcontainer.json, shown on the main service. */
 	extraMounts: ResolvedVolume[];
 }
 
@@ -58,24 +58,24 @@ export interface ContainerCandidate {
 	composeProjectName?: string;
 }
 
-/** Serve una conferma esplicita di quale container in esecuzione corrisponde a questa finestra. */
+/** An explicit confirmation is needed for which running container corresponds to this window. */
 export class AmbiguousContainerError extends Error {
 	constructor(public readonly candidates: ContainerCandidate[]) {
-		super(`Conferma quale dei ${candidates.length} devcontainer in esecuzione sull'host è questa finestra.`);
+		super(`Confirm which of the ${candidates.length} running devcontainers is this window.`);
 	}
 }
 
 /**
- * Nessun container in esecuzione ha la label "devcontainer.local_folder":
- * quasi certamente questo devcontainer è stato creato clonando il
- * repository in un volume Docker ("Clone Repository in Named Container
- * Volume") invece che da una cartella locale — non esiste alcun percorso
- * host da passare a `docker compose`, quindi non è supportato per ora.
+ * No running container has the "devcontainer.local_folder" label: this
+ * devcontainer was almost certainly created by cloning the repository into
+ * a Docker volume ("Clone Repository in Named Container Volume") instead of
+ * from a local folder — there is no host path to pass to `docker compose`,
+ * so this scenario isn't supported yet.
  */
 export class UnsupportedWorkspaceError extends Error {
 	constructor() {
 		super(
-			'Questo devcontainer non sembra montare una cartella locale (probabilmente è stato creato clonando il repository in un volume Docker): l\'estensione non supporta ancora questo scenario, perché non esiste un percorso host da usare con "docker compose".'
+			'This devcontainer doesn\'t seem to mount a local folder (it was probably created by cloning the repository into a Docker volume): the extension doesn\'t support this scenario yet, because there is no host path to use with "docker compose".'
 		);
 	}
 }
@@ -90,12 +90,13 @@ export async function findDevcontainerJson(): Promise<vscode.Uri | undefined> {
 }
 
 /**
- * Carica devcontainer.json e risolve la configurazione compose delegando il
- * merge a `docker compose config` invece di reimplementarlo (vedi claude.md).
+ * Loads devcontainer.json and resolves the compose configuration by
+ * delegating the merge to `docker compose config` instead of
+ * reimplementing it (see claude.md).
  *
- * `preferredContainerId` disambigua il caso in cui, stando dentro a un
- * devcontainer, sull'host ci sono più container con la label
- * "devcontainer.local_folder" (vedi AmbiguousContainerError).
+ * `preferredContainerId` disambiguates the case where, while inside a
+ * devcontainer, the host has more than one container with the
+ * "devcontainer.local_folder" label (see AmbiguousContainerError).
  */
 export async function loadDevcontainerConfig(devcontainerUri: vscode.Uri, preferredContainerId?: string): Promise<DevcontainerConfig> {
 	const bytes = await vscode.workspace.fs.readFile(devcontainerUri);
@@ -104,7 +105,7 @@ export async function loadDevcontainerConfig(devcontainerUri: vscode.Uri, prefer
 
 	const rawComposeFiles: string | string[] | undefined = json.dockerComposeFile;
 	if (!rawComposeFiles) {
-		throw new Error('devcontainer.json non usa "dockerComposeFile": non è un devcontainer basato su compose.');
+		throw new Error('devcontainer.json does not use "dockerComposeFile": this is not a compose-based devcontainer.');
 	}
 
 	const { baseDir, localWorkspaceFolder, composeProjectName } = await resolveHostPaths(devcontainerUri, preferredContainerId);
@@ -158,7 +159,7 @@ export async function loadDevcontainerConfig(devcontainerUri: vscode.Uri, prefer
 
 export type ComposeLifecycleAction = 'start' | 'stop' | 'restart';
 
-/** Avvia/ferma/riavvia un singolo servizio senza dover aprire Docker Desktop. */
+/** Start/stop/restart a single service without having to open Docker Desktop. */
 export async function runComposeLifecycleAction(config: DevcontainerConfig, serviceName: string, action: ComposeLifecycleAction): Promise<void> {
 	const composeArgs = action === 'start' ? ['up', '-d', serviceName] : [action, serviceName];
 	const args = composeBaseArgs(config.composeFiles, config.projectName).concat(composeArgs);
@@ -166,7 +167,7 @@ export async function runComposeLifecycleAction(config: DevcontainerConfig, serv
 		await execFileAsync('docker', ['compose', ...args], { cwd: config.baseDir, maxBuffer: 10 * 1024 * 1024 });
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`"docker compose ${composeArgs.join(' ')}" fallito: ${message}`);
+		throw new Error(`"docker compose ${composeArgs.join(' ')}" failed: ${message}`);
 	}
 }
 
@@ -175,13 +176,13 @@ export function composeBaseArgs(composeFiles: string[], projectName: string): st
 }
 
 /**
- * La CLI Dev Containers crea i container con un project name compose
- * proprio (di norma "<cartella-sanitizzata>_devcontainer"), diverso da
- * quello che `docker compose` dedurrebbe di default dalla cwd: senza,
- * `ps`/`start`/`stop` non troverebbero i container già esistenti.
- * Se un container per questo progetto è già in esecuzione, ne leggiamo il
- * project name reale dalla sua label compose; altrimenti usiamo la
- * convenzione della CLI come miglior tentativo.
+ * The Dev Containers CLI creates containers with its own compose project
+ * name (normally "<sanitized-folder>_devcontainer"), different from what
+ * `docker compose` would infer by default from the cwd: without it,
+ * `ps`/`start`/`stop` wouldn't find containers that already exist.
+ * If a container for this project is already running, we read its real
+ * project name from its compose label; otherwise we fall back to the CLI's
+ * naming convention as a best effort.
  */
 async function resolveComposeProjectName(localWorkspaceFolder: string): Promise<string> {
 	try {
@@ -191,7 +192,7 @@ async function resolveComposeProjectName(localWorkspaceFolder: string): Promise<
 			return match.composeProjectName;
 		}
 	} catch {
-		// Docker non raggiungibile o nessun container: usiamo il fallback qui sotto.
+		// Docker unreachable or no container running: fall back below.
 	}
 	return defaultComposeProjectName(localWorkspaceFolder);
 }
@@ -202,12 +203,12 @@ function defaultComposeProjectName(localWorkspaceFolder: string): string {
 }
 
 /**
- * L'estensione gira sull'host (extensionKind: "ui") anche quando la finestra
- * è attaccata dentro al devcontainer: in quel caso `devcontainerUri.fsPath`
- * è un percorso *dentro* al container, non utilizzabile per invocare
- * `docker compose` sull'host. Se rileviamo quel contesto, risolviamo il
- * percorso host reale tramite la label `devcontainer.local_folder` che la
- * CLI Dev Containers assegna al container in esecuzione.
+ * The extension runs on the host (extensionKind: "ui") even when the window
+ * is attached inside the devcontainer: in that case `devcontainerUri.fsPath`
+ * is a path *inside* the container, unusable for invoking `docker compose`
+ * on the host. When we detect that context, we resolve the real host path
+ * via the "devcontainer.local_folder" label the Dev Containers CLI assigns
+ * to the running container.
  */
 async function resolveHostPaths(
 	devcontainerUri: vscode.Uri,
@@ -222,7 +223,7 @@ async function resolveHostPaths(
 
 	const workspaceFolder = vscode.workspace.getWorkspaceFolder(devcontainerUri) ?? vscode.workspace.workspaceFolders?.[0];
 	if (!workspaceFolder) {
-		throw new Error('Nessuna cartella di workspace aperta.');
+		throw new Error('No workspace folder is open.');
 	}
 	const containerWorkspaceRoot = workspaceFolder.uri.fsPath;
 	const containerDevcontainerDir = path.dirname(devcontainerUri.fsPath);
@@ -234,8 +235,8 @@ async function resolveHostPaths(
 }
 
 /**
- * Elenca i container in esecuzione sull'host creati dalla CLI Dev Containers
- * (riconoscibili dalla label "devcontainer.local_folder").
+ * Lists containers running on the host that were created by the Dev
+ * Containers CLI (recognizable from the "devcontainer.local_folder" label).
  */
 export async function listDevcontainerCandidates(): Promise<ContainerCandidate[]> {
 	let runningIds: string[];
@@ -243,7 +244,7 @@ export async function listDevcontainerCandidates(): Promise<ContainerCandidate[]
 		runningIds = await listRunningContainerIds();
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Impossibile contattare Docker dall'host: ${message}`);
+		throw new Error(`Unable to reach Docker from the host: ${message}`);
 	}
 
 	const infos = await inspectContainers(runningIds);
@@ -260,12 +261,12 @@ export async function listDevcontainerCandidates(): Promise<ContainerCandidate[]
 }
 
 async function findHostCandidate(preferredContainerId: string | undefined): Promise<ContainerCandidate> {
-	// L'API pubblica di VS Code non espone l'id del container a cui si è
-	// attaccati (solo vscode.env.remoteName): anche con un solo container
-	// candidato non possiamo essere certi che sia *questa* finestra (es. più
-	// devcontainer con lo stesso workspaceFolder interno, aperti insieme).
-	// Chiediamo quindi sempre conferma la prima volta per workspace, salvo
-	// una preferenza già salvata e ancora valida.
+	// VS Code's public API doesn't expose the id of the container we're
+	// attached to (only vscode.env.remoteName): even with a single
+	// candidate container we can't be sure it's *this* window (e.g.
+	// multiple devcontainers sharing the same internal workspaceFolder,
+	// running together). So we always ask for confirmation the first time
+	// per workspace, unless a still-valid preference was already saved.
 	const candidates = await listDevcontainerCandidates();
 
 	if (preferredContainerId) {
@@ -308,7 +309,7 @@ function substituteVariables(value: string, ctx: SubstitutionContext): string {
 		.replace(/\$\{localEnv:([^}]+)\}/g, (_, name) => process.env[name] ?? '');
 }
 
-/** Formato raw dei mount devcontainer: "type=bind,source=...,target=...,consistency=cached". */
+/** Raw devcontainer mount format: "type=bind,source=...,target=...,consistency=cached". */
 function parseMountString(raw: string): ResolvedVolume | undefined {
 	const entries: Record<string, string> = {};
 	for (const part of raw.split(',').map(p => p.trim()).filter(Boolean)) {
@@ -351,7 +352,7 @@ async function resolveComposeServices(composeFiles: string[], cwd: string, proje
 		({ stdout } = await execFileAsync('docker', ['compose', ...args], { cwd, maxBuffer: 10 * 1024 * 1024 }));
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`"docker compose config" fallito: ${message}`);
+		throw new Error(`"docker compose config" failed: ${message}`);
 	}
 
 	const raw = JSON.parse(stdout);
@@ -377,12 +378,12 @@ function scalarString(node: unknown): string | undefined {
 }
 
 /**
- * Legge i file compose "grezzi" (non risolti) per capire quali variabili
- * sono modificabili in modo affidabile: quelle definite letteralmente in
- * "environment:" (mappa o forma "KEY=VALUE") hanno precedenza; per le
- * restanti, se il servizio referenzia un "env_file:", controlliamo lì.
- * Quelle ereditate dall'immagine o da un .env di progetto (variabili
- * `${VAR}` nel compose) restano di sola lettura.
+ * Reads the "raw" (unresolved) compose files to figure out which variables
+ * can be reliably edited: those defined literally under "environment:"
+ * (mapping or "KEY=VALUE" form) take precedence; for the rest, if the
+ * service references an "env_file:", we check there. Variables inherited
+ * from the image, or coming from a project .env via `${VAR}` substitution
+ * in the compose file, remain read-only.
  */
 async function computeEnvVarSources(composeFiles: string[]): Promise<Map<string, Map<string, EnvVarSource>>> {
 	const result = new Map<string, Map<string, EnvVarSource>>();
@@ -443,7 +444,7 @@ function collectEnvKeys(envNode: unknown, keys: Set<string>): void {
 	}
 }
 
-/** "env_file:" può essere una stringa, una lista di stringhe, o (compose v2) una lista di {path, required}. */
+/** "env_file:" can be a string, a list of strings, or (compose v2) a list of {path, required}. */
 function collectEnvFilePaths(envFileNode: unknown, composeFileDir: string): string[] {
 	const rawPaths: string[] = [];
 	if (isScalar(envFileNode) && typeof envFileNode.value === 'string') {
@@ -498,9 +499,9 @@ async function tryReadYamlDocument(filePath: string): Promise<Document.Parsed | 
 }
 
 /**
- * Scrive una variabile d'ambiente nella sua sorgente reale: il file compose
- * (preservando commenti/formattazione via l'API Document di `yaml`, vedi
- * claude.md) o il file .env referenziato via env_file.
+ * Writes an environment variable to its real source: the compose file
+ * (preserving comments/formatting via the `yaml` Document API, see
+ * claude.md) or the .env file referenced via env_file.
  */
 export async function setEnvironmentVariable(source: EnvVarSource, serviceName: string, key: string, value: string): Promise<void> {
 	if (source.kind === 'envFile') {
@@ -509,7 +510,7 @@ export async function setEnvironmentVariable(source: EnvVarSource, serviceName: 
 		const text = Buffer.from(bytes).toString('utf8');
 		const pattern = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
 		if (!pattern.test(text)) {
-			throw new Error(`Variabile "${key}" non trovata in ${source.filePath}.`);
+			throw new Error(`Variable "${key}" not found in ${source.filePath}.`);
 		}
 		await vscode.workspace.fs.writeFile(uri, Buffer.from(text.replace(pattern, `${key}=${value}`), 'utf8'));
 		return;
@@ -517,7 +518,7 @@ export async function setEnvironmentVariable(source: EnvVarSource, serviceName: 
 
 	const doc = await tryReadYamlDocument(source.filePath);
 	if (!doc) {
-		throw new Error(`Impossibile leggere ${source.filePath}.`);
+		throw new Error(`Unable to read ${source.filePath}.`);
 	}
 	const envNode = doc.getIn(['services', serviceName, 'environment'], true);
 	if (isMap(envNode) && envNode.has(key)) {
@@ -536,14 +537,14 @@ export async function setEnvironmentVariable(source: EnvVarSource, serviceName: 
 			return;
 		}
 	}
-	throw new Error(`Impossibile trovare "${key}" per il servizio "${serviceName}" in ${source.filePath}.`);
+	throw new Error(`Unable to find "${key}" for service "${serviceName}" in ${source.filePath}.`);
 }
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Stato attuale dei container per servizio (running/exited/paused/...); assenti = mai creati. */
+/** Current status of containers per service (running/exited/paused/...); absent = never created. */
 async function resolveServiceStatuses(composeFiles: string[], cwd: string, projectName: string): Promise<Record<string, string>> {
 	const args = composeBaseArgs(composeFiles, projectName).concat(['ps', '-a', '--format', 'json']);
 
@@ -551,7 +552,7 @@ async function resolveServiceStatuses(composeFiles: string[], cwd: string, proje
 	try {
 		({ stdout } = await execFileAsync('docker', ['compose', ...args], { cwd, maxBuffer: 10 * 1024 * 1024 }));
 	} catch {
-		// Non blocchiamo la tree view solo perché lo stato non è disponibile.
+		// Don't block the tree view just because the status isn't available.
 		return {};
 	}
 
@@ -567,7 +568,7 @@ async function resolveServiceStatuses(composeFiles: string[], cwd: string, proje
 				statuses[entry.Service] = entry.State;
 			}
 		} catch {
-			// riga non valida, ignorata
+			// invalid line, ignored
 		}
 	}
 	return statuses;
