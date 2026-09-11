@@ -1,0 +1,9 @@
+.vscode/**
+.gitignore
+src/**
+sample-workspace/**
+claude.md
+tsconfig.json
+package-lock.json
+out/**/*.map
+**/.gitignore

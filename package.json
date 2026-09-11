@@ -41,6 +41,26 @@
         "command": "devcontainerGui.refresh",
         "title": "Devcontainer: aggiorna configurazione",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "devcontainerGui.startService",
+        "title": "Devcontainer: avvia servizio",
+        "icon": "$(play)"
+      },
+      {
+        "command": "devcontainerGui.stopService",
+        "title": "Devcontainer: ferma servizio",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "devcontainerGui.restartService",
+        "title": "Devcontainer: riavvia servizio",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "devcontainerGui.viewLogs",
+        "title": "Devcontainer: mostra log servizio",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -49,6 +69,28 @@
           "command": "devcontainerGui.refresh",
           "when": "view == devcontainerGui.configView",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "devcontainerGui.startService",
+          "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
+          "group": "inline@1"
+        },
+        {
+          "command": "devcontainerGui.stopService",
+          "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
+          "group": "inline@2"
+        },
+        {
+          "command": "devcontainerGui.restartService",
+          "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
+          "group": "inline@3"
+        },
+        {
+          "command": "devcontainerGui.viewLogs",
+          "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
+          "group": "inline@4"
         }
       ]
     }

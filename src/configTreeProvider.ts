@@ -1,23 +1,37 @@
 import * as vscode from 'vscode';
 import {
+	AmbiguousContainerError,
+	ContainerCandidate,
 	DevcontainerConfig,
+	ResolvedPort,
 	ResolvedService,
+	ResolvedVolume,
+	UnsupportedWorkspaceError,
 	findDevcontainerJson,
 	loadDevcontainerConfig
 } from './devcontainerConfig';
 
-type TreeNode =
-	| { kind: 'message'; label: string; description?: string }
+export const PREFERRED_CONTAINER_STATE_KEY = 'devcontainerGui.preferredContainerId';
+
+export type TreeNode =
+	| { kind: 'message'; label: string; description?: string; commandId?: string; commandArgs?: unknown[] }
 	| { kind: 'composeFilesGroup'; files: string[] }
 	| { kind: 'composeFile'; filePath: string }
 	| { kind: 'servicesGroup'; config: DevcontainerConfig }
-	| { kind: 'service'; name: string; service: ResolvedService; isMain: boolean; inRunServices: boolean }
-	| { kind: 'detailGroup'; title: string; items: string[] }
-	| { kind: 'detailItem'; text: string };
+	| { kind: 'service'; name: string; service: ResolvedService; config: DevcontainerConfig; isMain: boolean; inRunServices: boolean; extraVolumes: ResolvedVolume[] }
+	| { kind: 'detailGroup'; title: string; children: TreeNode[] }
+	| { kind: 'detailItem'; text: string }
+	| { kind: 'portItem'; text: string; url?: string };
+
+export function isServiceNode(node: unknown): node is Extract<TreeNode, { kind: 'service' }> {
+	return !!node && typeof node === 'object' && (node as TreeNode).kind === 'service';
+}
 
 export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+	constructor(private readonly context: vscode.ExtensionContext) {}
 
 	refresh(): void {
 		this._onDidChangeTreeData.fire();
@@ -28,7 +42,11 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			case 'message': {
 				const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
 				item.description = element.description;
+				item.tooltip = element.description ? `${element.label}\n\n${element.description}` : element.label;
 				item.iconPath = new vscode.ThemeIcon('info');
+				if (element.commandId) {
+					item.command = { command: element.commandId, title: element.label, arguments: element.commandArgs };
+				}
 				return item;
 			}
 			case 'composeFilesGroup': {
@@ -55,14 +73,15 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			}
 			case 'service': {
 				const item = new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.Collapsed);
-				item.description = describeServiceRole(element.isMain, element.inRunServices);
+				item.description = `${describeServiceRole(element.isMain, element.inRunServices)} · ${describeStatus(element.service.status)}`;
 				item.tooltip = element.service.image;
-				item.iconPath = new vscode.ThemeIcon(element.isMain ? 'star-full' : 'vm');
+				item.iconPath = statusIcon(element.service.status);
+				item.contextValue = 'devcontainerGuiService';
 				return item;
 			}
 			case 'detailGroup': {
 				const item = new vscode.TreeItem(
-					`${element.title} (${element.items.length})`,
+					`${element.title} (${element.children.length})`,
 					vscode.TreeItemCollapsibleState.Collapsed
 				);
 				item.iconPath = new vscode.ThemeIcon(iconForDetailGroup(element.title));
@@ -70,6 +89,15 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			}
 			case 'detailItem': {
 				const item = new vscode.TreeItem(element.text, vscode.TreeItemCollapsibleState.None);
+				return item;
+			}
+			case 'portItem': {
+				const item = new vscode.TreeItem(element.text, vscode.TreeItemCollapsibleState.None);
+				if (element.url) {
+					item.iconPath = new vscode.ThemeIcon('link-external');
+					item.tooltip = `Apri ${element.url}`;
+					item.command = { command: 'vscode.open', title: 'Apri nel browser', arguments: [vscode.Uri.parse(element.url)] };
+				}
 				return item;
 			}
 		}
@@ -86,11 +114,22 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			case 'servicesGroup':
 				return this.getServiceNodes(element.config);
 			case 'service':
-				return this.getServiceDetailNodes(element.service);
+				return this.getServiceDetailNodes(element.service, element.extraVolumes);
 			case 'detailGroup':
-				return element.items.map((text): TreeNode => ({ kind: 'detailItem', text }));
+				return element.children;
 			default:
 				return [];
+		}
+	}
+
+	async selectPreferredContainer(candidates: ContainerCandidate[]): Promise<void> {
+		const picked = await vscode.window.showQuickPick(
+			candidates.map(c => ({ label: c.name, description: c.localFolder, containerId: c.containerId })),
+			{ placeHolder: 'A quale devcontainer è collegata questa finestra?' }
+		);
+		if (picked) {
+			await this.context.workspaceState.update(PREFERRED_CONTAINER_STATE_KEY, picked.containerId);
+			this.refresh();
 		}
 	}
 
@@ -100,46 +139,82 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			return [{ kind: 'message', label: 'Nessun devcontainer.json trovato nel workspace' }];
 		}
 
+		const preferredContainerId = this.context.workspaceState.get<string>(PREFERRED_CONTAINER_STATE_KEY);
+
 		try {
-			const config = await loadDevcontainerConfig(devcontainerUri);
+			const config = await loadDevcontainerConfig(devcontainerUri, preferredContainerId);
 			return [
 				{ kind: 'composeFilesGroup', files: config.composeFiles },
 				{ kind: 'servicesGroup', config }
 			];
 		} catch (err) {
+			if (err instanceof AmbiguousContainerError) {
+				return [{
+					kind: 'message',
+					label: 'Conferma a quale devcontainer è collegata questa finestra',
+					description: err.candidates.map(c => c.name).join(', '),
+					commandId: 'devcontainerGui.selectContainer',
+					commandArgs: [err.candidates]
+				}];
+			}
+			if (err instanceof UnsupportedWorkspaceError) {
+				return [{ kind: 'message', label: 'Scenario non supportato', description: err.message }];
+			}
 			const message = err instanceof Error ? err.message : String(err);
 			return [{ kind: 'message', label: 'Impossibile risolvere la configurazione', description: message }];
 		}
 	}
 
 	private getServiceNodes(config: DevcontainerConfig): TreeNode[] {
-		return Object.entries(config.services).map(([name, service]): TreeNode => ({
-			kind: 'service',
-			name,
-			service,
-			isMain: name === config.mainService,
-			inRunServices: config.runServices.includes(name)
-		}));
+		return Object.entries(config.services).map(([name, service]): TreeNode => {
+			const isMain = name === config.mainService;
+			return {
+				kind: 'service',
+				name,
+				service,
+				config,
+				isMain,
+				inRunServices: config.runServices.includes(name),
+				extraVolumes: isMain ? config.extraMounts : []
+			};
+		});
 	}
 
-	private getServiceDetailNodes(service: ResolvedService): TreeNode[] {
-		const ports = service.ports.map(p => `${p.published ?? '-'} → ${p.target}/${p.protocol ?? 'tcp'}`);
-		const env = Object.entries(service.environment).map(([key, value]) => `${key}=${value}`);
-		const volumes = service.volumes.map(v => `${v.source ?? '(anonimo)'} → ${v.target} (${v.type})`);
+	private getServiceDetailNodes(service: ResolvedService, extraVolumes: ResolvedVolume[]): TreeNode[] {
+		const ports: TreeNode[] = service.ports.map(portNode);
+		const env: TreeNode[] = Object.entries(service.environment).map(([key, value]): TreeNode => ({
+			kind: 'detailItem',
+			text: `${key}=${value}`
+		}));
+		const volumes: TreeNode[] = [...service.volumes, ...extraVolumes].map((v): TreeNode => ({
+			kind: 'detailItem',
+			text: formatVolume(v)
+		}));
 
-		const groups: TreeNode[] = [];
-		groups.push(toDetailNode('Porte', ports, 'Nessuna porta esposta'));
-		groups.push(toDetailNode('Variabili d\'ambiente', env, 'Nessuna variabile definita'));
-		groups.push(toDetailNode('Volumi', volumes, 'Nessun volume montato'));
-		return groups;
+		return [
+			toDetailGroupNode('Porte', ports, 'Nessuna porta esposta'),
+			toDetailGroupNode('Variabili d\'ambiente', env, 'Nessuna variabile definita'),
+			toDetailGroupNode('Volumi', volumes, 'Nessun volume montato')
+		];
 	}
 }
 
-function toDetailNode(title: string, items: string[], emptyLabel: string): TreeNode {
-	if (items.length === 0) {
+function portNode(p: ResolvedPort): TreeNode {
+	const text = `${p.published ?? '-'} → ${p.target}/${p.protocol ?? 'tcp'}`;
+	const url = p.published ? `http://localhost:${p.published}` : undefined;
+	return { kind: 'portItem', text, url };
+}
+
+function formatVolume(v: ResolvedVolume): string {
+	const base = `${v.source ?? '(anonimo)'} → ${v.target} (${v.type})`;
+	return v.fromDevcontainerJson ? `${base} · da devcontainer.json` : base;
+}
+
+function toDetailGroupNode(title: string, children: TreeNode[], emptyLabel: string): TreeNode {
+	if (children.length === 0) {
 		return { kind: 'message', label: `${title}: ${emptyLabel}` };
 	}
-	return { kind: 'detailGroup', title, items };
+	return { kind: 'detailGroup', title, children };
 }
 
 function describeServiceRole(isMain: boolean, inRunServices: boolean): string {
@@ -149,7 +224,42 @@ function describeServiceRole(isMain: boolean, inRunServices: boolean): string {
 	if (inRunServices) {
 		return 'runServices';
 	}
-	return 'non avviato';
+	return 'non in runServices';
+}
+
+function describeStatus(status: string | undefined): string {
+	switch (status) {
+		case 'running':
+			return 'in esecuzione';
+		case 'exited':
+			return 'fermo';
+		case 'paused':
+			return 'in pausa';
+		case 'restarting':
+			return 'riavvio in corso';
+		case 'dead':
+			return 'dead';
+		case undefined:
+			return 'non creato';
+		default:
+			return status;
+	}
+}
+
+function statusIcon(status: string | undefined): vscode.ThemeIcon {
+	switch (status) {
+		case 'running':
+			return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.green'));
+		case 'restarting':
+			return new vscode.ThemeIcon('sync', new vscode.ThemeColor('charts.yellow'));
+		case 'paused':
+			return new vscode.ThemeIcon('debug-pause', new vscode.ThemeColor('charts.yellow'));
+		case 'exited':
+		case 'dead':
+			return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.red'));
+		default:
+			return new vscode.ThemeIcon('circle-outline');
+	}
 }
 
 function iconForDetailGroup(title: string): string {
