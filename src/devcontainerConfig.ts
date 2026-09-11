@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { Document, isMap, isSeq, isScalar, parseDocument } from 'yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,9 +21,16 @@ export interface ResolvedVolume {
 	fromDevcontainerJson?: boolean;
 }
 
+/** Dove scrivere per modificare una variabile: nel compose YAML stesso, o in un file .env referenziato via env_file. */
+export type EnvVarSource =
+	| { kind: 'compose'; filePath: string }
+	| { kind: 'envFile'; filePath: string };
+
 export interface ResolvedService {
 	image?: string;
 	environment: Record<string, string>;
+	/** Per le variabili modificabili (definite letteralmente nel compose o in un env_file), dove scriverle. Le altre (ereditate dall'immagine, da .env di progetto) sono di sola lettura. */
+	environmentSources: Record<string, EnvVarSource>;
 	ports: ResolvedPort[];
 	volumes: ResolvedVolume[];
 	/** Stato riportato da `docker compose ps` (running, exited, paused, ...), assente se il container non è mai stato creato. */
@@ -347,16 +355,192 @@ async function resolveComposeServices(composeFiles: string[], cwd: string, proje
 	}
 
 	const raw = JSON.parse(stdout);
+	const envSources = await computeEnvVarSources(composeFiles);
 	const services: Record<string, ResolvedService> = {};
 	for (const [name, svc] of Object.entries<any>(raw.services ?? {})) {
 		services[name] = {
 			image: svc.image,
 			environment: normalizeEnvironment(svc.environment),
+			environmentSources: Object.fromEntries(envSources.get(name) ?? []),
 			ports: (svc.ports ?? []).map((p: any) => ({ target: p.target, published: p.published, protocol: p.protocol })),
 			volumes: (svc.volumes ?? []).map((v: any) => ({ type: v.type, source: v.source, target: v.target }))
 		};
 	}
 	return services;
+}
+
+function scalarString(node: unknown): string | undefined {
+	if (isScalar(node) && typeof node.value === 'string') {
+		return node.value;
+	}
+	return undefined;
+}
+
+/**
+ * Legge i file compose "grezzi" (non risolti) per capire quali variabili
+ * sono modificabili in modo affidabile: quelle definite letteralmente in
+ * "environment:" (mappa o forma "KEY=VALUE") hanno precedenza; per le
+ * restanti, se il servizio referenzia un "env_file:", controlliamo lì.
+ * Quelle ereditate dall'immagine o da un .env di progetto (variabili
+ * `${VAR}` nel compose) restano di sola lettura.
+ */
+async function computeEnvVarSources(composeFiles: string[]): Promise<Map<string, Map<string, EnvVarSource>>> {
+	const result = new Map<string, Map<string, EnvVarSource>>();
+
+	for (const filePath of composeFiles) {
+		const doc = await tryReadYamlDocument(filePath);
+		const servicesNode = doc?.get('services', true);
+		if (!isMap(servicesNode)) {
+			continue;
+		}
+		for (const servicePair of servicesNode.items) {
+			const serviceName = scalarString(servicePair.key);
+			if (!serviceName || !isMap(servicePair.value)) {
+				continue;
+			}
+			const sources = result.get(serviceName) ?? new Map<string, EnvVarSource>();
+
+			const envNode = servicePair.value.get('environment', true);
+			const literalKeys = new Set<string>();
+			collectEnvKeys(envNode, literalKeys);
+			for (const key of literalKeys) {
+				sources.set(key, { kind: 'compose', filePath });
+			}
+
+			const envFilePaths = collectEnvFilePaths(servicePair.value.get('env_file', true), path.dirname(filePath));
+			for (const envFilePath of envFilePaths) {
+				for (const key of await readEnvFileKeys(envFilePath)) {
+					if (!sources.has(key)) {
+						sources.set(key, { kind: 'envFile', filePath: envFilePath });
+					}
+				}
+			}
+
+			if (sources.size > 0) {
+				result.set(serviceName, sources);
+			}
+		}
+	}
+	return result;
+}
+
+function collectEnvKeys(envNode: unknown, keys: Set<string>): void {
+	if (isMap(envNode)) {
+		for (const pair of envNode.items) {
+			const key = scalarString(pair.key);
+			if (key) {
+				keys.add(key);
+			}
+		}
+	} else if (isSeq(envNode)) {
+		for (const item of envNode.items) {
+			const raw = scalarString(item);
+			if (raw) {
+				const eq = raw.indexOf('=');
+				keys.add(eq === -1 ? raw : raw.slice(0, eq));
+			}
+		}
+	}
+}
+
+/** "env_file:" può essere una stringa, una lista di stringhe, o (compose v2) una lista di {path, required}. */
+function collectEnvFilePaths(envFileNode: unknown, composeFileDir: string): string[] {
+	const rawPaths: string[] = [];
+	if (isScalar(envFileNode) && typeof envFileNode.value === 'string') {
+		rawPaths.push(envFileNode.value);
+	} else if (isSeq(envFileNode)) {
+		for (const item of envFileNode.items) {
+			const raw = scalarString(item);
+			if (raw) {
+				rawPaths.push(raw);
+				continue;
+			}
+			if (isMap(item)) {
+				const p = scalarString(item.get('path', true));
+				if (p) {
+					rawPaths.push(p);
+				}
+			}
+		}
+	}
+	return rawPaths.map(p => path.resolve(composeFileDir, p));
+}
+
+async function readEnvFileKeys(filePath: string): Promise<string[]> {
+	try {
+		const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+		const text = Buffer.from(bytes).toString('utf8');
+		const keys: string[] = [];
+		for (const line of text.split('\n')) {
+			const trimmed = line.trim();
+			if (!trimmed || trimmed.startsWith('#')) {
+				continue;
+			}
+			const eq = trimmed.indexOf('=');
+			if (eq === -1) {
+				continue;
+			}
+			keys.push(trimmed.slice(0, eq).trim());
+		}
+		return keys;
+	} catch {
+		return [];
+	}
+}
+
+async function tryReadYamlDocument(filePath: string): Promise<Document.Parsed | undefined> {
+	try {
+		const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+		return parseDocument(Buffer.from(bytes).toString('utf8'));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Scrive una variabile d'ambiente nella sua sorgente reale: il file compose
+ * (preservando commenti/formattazione via l'API Document di `yaml`, vedi
+ * claude.md) o il file .env referenziato via env_file.
+ */
+export async function setEnvironmentVariable(source: EnvVarSource, serviceName: string, key: string, value: string): Promise<void> {
+	if (source.kind === 'envFile') {
+		const uri = vscode.Uri.file(source.filePath);
+		const bytes = await vscode.workspace.fs.readFile(uri);
+		const text = Buffer.from(bytes).toString('utf8');
+		const pattern = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
+		if (!pattern.test(text)) {
+			throw new Error(`Variabile "${key}" non trovata in ${source.filePath}.`);
+		}
+		await vscode.workspace.fs.writeFile(uri, Buffer.from(text.replace(pattern, `${key}=${value}`), 'utf8'));
+		return;
+	}
+
+	const doc = await tryReadYamlDocument(source.filePath);
+	if (!doc) {
+		throw new Error(`Impossibile leggere ${source.filePath}.`);
+	}
+	const envNode = doc.getIn(['services', serviceName, 'environment'], true);
+	if (isMap(envNode) && envNode.has(key)) {
+		doc.setIn(['services', serviceName, 'environment', key], value);
+		await vscode.workspace.fs.writeFile(vscode.Uri.file(source.filePath), Buffer.from(doc.toString(), 'utf8'));
+		return;
+	}
+	if (isSeq(envNode)) {
+		const idx = envNode.items.findIndex(item => {
+			const raw = scalarString(item);
+			return raw !== undefined && (raw === key || raw.startsWith(`${key}=`));
+		});
+		if (idx !== -1) {
+			envNode.set(idx, `${key}=${value}`);
+			await vscode.workspace.fs.writeFile(vscode.Uri.file(source.filePath), Buffer.from(doc.toString(), 'utf8'));
+			return;
+		}
+	}
+	throw new Error(`Impossibile trovare "${key}" per il servizio "${serviceName}" in ${source.filePath}.`);
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Stato attuale dei container per servizio (running/exited/paused/...); assenti = mai creati. */

@@ -3,7 +3,23 @@
   "displayName": "Devcontainer GUI",
   "description": "Gestisci in modo semplice le impostazioni dei devcontainer basati su Docker Compose.",
   "version": "0.0.1",
-  "publisher": "TODO-set-publisher-id",
+  "publisher": "gitdialbertoannunziata",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gitdialbertoannunziata/vs-code-devcontainer-gui"
+  },
+  "bugs": {
+    "url": "https://github.com/gitdialbertoannunziata/vs-code-devcontainer-gui/issues"
+  },
+  "homepage": "https://github.com/gitdialbertoannunziata/vs-code-devcontainer-gui#readme",
+  "keywords": [
+    "devcontainer",
+    "dev containers",
+    "docker compose",
+    "docker",
+    "remote development"
+  ],
   "engines": {
     "vscode": "^1.90.0"
   },

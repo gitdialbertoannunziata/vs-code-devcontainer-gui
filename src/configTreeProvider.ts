@@ -3,6 +3,7 @@ import {
 	AmbiguousContainerError,
 	ContainerCandidate,
 	DevcontainerConfig,
+	EnvVarSource,
 	ResolvedPort,
 	ResolvedService,
 	ResolvedVolume,
@@ -21,7 +22,13 @@ export type TreeNode =
 	| { kind: 'service'; name: string; service: ResolvedService; config: DevcontainerConfig; isMain: boolean; inRunServices: boolean; extraVolumes: ResolvedVolume[] }
 	| { kind: 'detailGroup'; title: string; children: TreeNode[] }
 	| { kind: 'detailItem'; text: string }
-	| { kind: 'portItem'; text: string; url?: string };
+	| { kind: 'portItem'; text: string; url?: string }
+	| { kind: 'envItem'; key: string; value: string; source?: EnvVarSource; serviceName: string; isMainService: boolean }
+	| { kind: 'volumeItem'; text: string; hostPath?: string };
+
+export function isEnvItemNode(node: unknown): node is Extract<TreeNode, { kind: 'envItem' }> {
+	return !!node && typeof node === 'object' && (node as TreeNode).kind === 'envItem';
+}
 
 export function isServiceNode(node: unknown): node is Extract<TreeNode, { kind: 'service' }> {
 	return !!node && typeof node === 'object' && (node as TreeNode).kind === 'service';
@@ -100,6 +107,29 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 				}
 				return item;
 			}
+			case 'envItem': {
+				const item = new vscode.TreeItem(`${element.key}=${element.value}`, vscode.TreeItemCollapsibleState.None);
+				if (element.source) {
+					item.iconPath = new vscode.ThemeIcon('edit');
+					item.tooltip = element.source.kind === 'envFile'
+						? `Definita in ${element.source.filePath}. Clicca per modificare (serve un rebuild del devcontainer perché il cambiamento abbia effetto).`
+						: 'Clicca per modificare (serve ricreare il container perché il cambiamento abbia effetto).';
+					item.command = { command: 'devcontainerGui.editEnvVar', title: 'Modifica', arguments: [element] };
+				} else {
+					item.description = 'sola lettura';
+					item.tooltip = 'Non definita direttamente nel file compose o in un env_file referenziato: non modificabile da qui.';
+				}
+				return item;
+			}
+			case 'volumeItem': {
+				const item = new vscode.TreeItem(element.text, vscode.TreeItemCollapsibleState.None);
+				if (element.hostPath) {
+					item.iconPath = new vscode.ThemeIcon('folder-opened');
+					item.tooltip = `Apri ${element.hostPath} in Esplora file`;
+					item.command = { command: 'revealFileInOS', title: 'Apri in Esplora file', arguments: [vscode.Uri.file(element.hostPath)] };
+				}
+				return item;
+			}
 		}
 	}
 
@@ -114,7 +144,7 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			case 'servicesGroup':
 				return this.getServiceNodes(element.config);
 			case 'service':
-				return this.getServiceDetailNodes(element.service, element.extraVolumes);
+				return this.getServiceDetailNodes(element.name, element.service, element.isMain, element.extraVolumes);
 			case 'detailGroup':
 				return element.children;
 			default:
@@ -180,16 +210,17 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 		});
 	}
 
-	private getServiceDetailNodes(service: ResolvedService, extraVolumes: ResolvedVolume[]): TreeNode[] {
+	private getServiceDetailNodes(serviceName: string, service: ResolvedService, isMain: boolean, extraVolumes: ResolvedVolume[]): TreeNode[] {
 		const ports: TreeNode[] = service.ports.map(portNode);
 		const env: TreeNode[] = Object.entries(service.environment).map(([key, value]): TreeNode => ({
-			kind: 'detailItem',
-			text: `${key}=${value}`
+			kind: 'envItem',
+			key,
+			value,
+			source: service.environmentSources[key],
+			serviceName,
+			isMainService: isMain
 		}));
-		const volumes: TreeNode[] = [...service.volumes, ...extraVolumes].map((v): TreeNode => ({
-			kind: 'detailItem',
-			text: formatVolume(v)
-		}));
+		const volumes: TreeNode[] = [...service.volumes, ...extraVolumes].map(volumeNode);
 
 		return [
 			toDetailGroupNode('Porte', ports, 'Nessuna porta esposta'),
@@ -208,6 +239,12 @@ function portNode(p: ResolvedPort): TreeNode {
 function formatVolume(v: ResolvedVolume): string {
 	const base = `${v.source ?? '(anonimo)'} → ${v.target} (${v.type})`;
 	return v.fromDevcontainerJson ? `${base} · da devcontainer.json` : base;
+}
+
+function volumeNode(v: ResolvedVolume): TreeNode {
+	const text = formatVolume(v);
+	const hostPath = v.type === 'bind' && v.source ? v.source : undefined;
+	return { kind: 'volumeItem', text, hostPath };
 }
 
 function toDetailGroupNode(title: string, children: TreeNode[], emptyLabel: string): TreeNode {
