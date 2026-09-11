@@ -2,7 +2,7 @@
   "name": "vs-code-devcontainer-gui",
   "displayName": "Devcontainer GUI",
   "description": "Manage Docker Compose-based devcontainer settings with ease.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "gitdialbertoannunziata",
   "license": "MIT",
   "repository": {
