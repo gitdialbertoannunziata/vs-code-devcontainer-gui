@@ -2,7 +2,7 @@
   "name": "vs-code-devcontainer-gui",
   "displayName": "Devcontainer GUI",
   "description": "Manage Docker Compose-based devcontainer settings with ease.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "gitdialbertoannunziata",
   "license": "MIT",
   "repository": {
@@ -77,6 +77,11 @@
         "command": "devcontainerGui.viewLogs",
         "title": "Devcontainer: Show Service Logs",
         "icon": "$(output)"
+      },
+      {
+        "command": "devcontainerGui.openTerminal",
+        "title": "Devcontainer: Open Terminal in Service",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
@@ -107,6 +112,11 @@
           "command": "devcontainerGui.viewLogs",
           "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
           "group": "inline@4"
+        },
+        {
+          "command": "devcontainerGui.openTerminal",
+          "when": "view == devcontainerGui.configView && viewItem == devcontainerGuiService",
+          "group": "inline@5"
         }
       ]
     }

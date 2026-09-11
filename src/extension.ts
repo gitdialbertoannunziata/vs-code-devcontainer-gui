@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 import { ChildProcess, spawn } from 'child_process';
-import { ConfigTreeProvider, TreeNode, isEnvItemNode, isServiceNode } from './configTreeProvider';
-import { ComposeLifecycleAction, ContainerCandidate, composeBaseArgs, runComposeLifecycleAction, setEnvironmentVariable } from './devcontainerConfig';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { ConfigTreeProvider, TreeNode, isServiceNode, isEnvItemNode } from './configTreeProvider';
+import { ComposeLifecycleAction, ContainerCandidate, composeBaseArgs, resolveContainerId, resolveShellPath, runComposeLifecycleAction, setEnvironmentVariable } from './devcontainerConfig';
 
 interface LogStream {
 	channel: vscode.OutputChannel;
@@ -26,6 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		registerLifecycleCommand('devcontainerGui.restartService', 'restart'),
 		vscode.commands.registerCommand('devcontainerGui.viewLogs', (node: TreeNode) => viewServiceLogs(node, logStreams)),
 		vscode.commands.registerCommand('devcontainerGui.editEnvVar', (node: TreeNode) => editEnvVar(node, configTreeProvider)),
+		vscode.commands.registerCommand('devcontainerGui.openTerminal', (node: TreeNode) => openServiceTerminal(node)),
 		{
 			dispose() {
 				for (const { process, channel } of logStreams.values()) {
@@ -114,6 +118,81 @@ async function editEnvVar(node: TreeNode, provider: ConfigTreeProvider): Promise
 		vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
 	}
 	provider.refresh();
+}
+
+/**
+ * A VS Code terminal (integrated or a custom Pseudoterminal) can't give a
+ * real interactive shell here: integrated terminals run in the workspace's
+ * context (inside the container if attached, wrong host paths), and a
+ * Pseudoterminal has no real PTY on either end, so `docker exec -it` can't
+ * be used there and everything (echo, line editing, Ctrl+C) would have to be
+ * emulated by hand — which turned out too fragile in practice. Instead we do
+ * what Docker Desktop's "Open in terminal" does: launch a real OS terminal
+ * application outside VS Code, which has a genuine PTY, so `-it` works
+ * exactly as it normally would.
+ */
+async function openServiceTerminal(node: TreeNode): Promise<void> {
+	if (!isServiceNode(node)) {
+		return;
+	}
+	const containerId = await resolveContainerId(node.config, node.name);
+	if (!containerId) {
+		vscode.window.showErrorMessage(`Service "${node.name}" isn't running — start it first.`);
+		return;
+	}
+	// Plain `docker exec -it <id> <shell>`, exactly as simple as Docker
+	// Desktop's own "Open in terminal" — no `-c "... || ..."` wrapper, which
+	// had its own quoting/operator characters that a shell somewhere along
+	// the way (ours or the container's) could misparse.
+	const shellPath = await resolveShellPath(containerId);
+	const dockerCommand = ['docker', 'exec', '-it', containerId, shellPath];
+	try {
+		launchExternalTerminal(dockerCommand, node.config.baseDir);
+	} catch (err) {
+		vscode.window.showErrorMessage(`Could not open a terminal: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+function launchExternalTerminal(commandParts: string[], cwd: string): void {
+	let child: ReturnType<typeof spawn>;
+	if (process.platform === 'win32') {
+		// Passing the whole command line as one argv element and letting Node
+		// apply ITS OWN Windows quoting on top of our manual quoting double-
+		// escapes it — cmd.exe can end up not even recognizing `/k`, so the
+		// window opens and immediately closes with nothing visible. Writing
+		// the command to a .bat file sidesteps that: the process command line
+		// becomes just a plain file path, and `pause` at the end keeps the
+		// window open regardless of /k, as a second safety net.
+		const commandLine = commandParts.map(quoteForCmd).join(' ');
+		const scriptPath = path.join(os.tmpdir(), `devcontainer-gui-shell-${Date.now()}.bat`);
+		fs.writeFileSync(scriptPath, `@echo off\r\ncd /d "${cwd}"\r\n${commandLine}\r\necho.\r\npause\r\n`, 'utf8');
+		child = spawn('cmd.exe', ['/k', scriptPath], { detached: true, stdio: 'ignore' });
+		child.on('exit', () => fs.unlink(scriptPath, () => { /* best effort cleanup */ }));
+	} else if (process.platform === 'darwin') {
+		const commandLine = commandParts.map(quoteForShell).join(' ');
+		const script = `tell application "Terminal" to do script "cd ${appleScriptEscape(cwd)} && ${appleScriptEscape(commandLine)}"`;
+		child = spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' });
+	} else {
+		const commandLine = commandParts.map(quoteForShell).join(' ');
+		child = spawn('x-terminal-emulator', ['-e', 'sh', '-c', `cd ${quoteForShell(cwd)} && ${commandLine}`], { detached: true, stdio: 'ignore' });
+	}
+	// spawn() doesn't throw synchronously for a missing/failing executable;
+	// without this listener the failure is invisible (looks like "the button
+	// does nothing"), and an unhandled "error" on an EventEmitter is fatal.
+	child.on('error', err => vscode.window.showErrorMessage(`Could not open a terminal: ${err.message}`));
+	child.unref();
+}
+
+function quoteForCmd(arg: string): string {
+	return /[\s"^&|<>]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg;
+}
+
+function quoteForShell(arg: string): string {
+	return /\s/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg;
+}
+
+function appleScriptEscape(value: string): string {
+	return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export function deactivate(): void {}

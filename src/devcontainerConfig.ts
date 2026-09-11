@@ -119,9 +119,13 @@ export async function loadDevcontainerConfig(devcontainerUri: vscode.Uri, prefer
 		resolveComposeServices(composeFiles, baseDir, projectName),
 		resolveServiceStatuses(composeFiles, baseDir, projectName)
 	]);
-	for (const [name, status] of Object.entries(statuses)) {
+	for (const [name, info] of Object.entries(statuses)) {
 		if (services[name]) {
-			services[name].status = status;
+			services[name].status = info.status;
+			// `docker compose config` has no "image" for build-based services
+			// (no image tag exists until it's actually built); fall back to
+			// what the already-created container reports, if any.
+			services[name].image ??= info.image;
 		}
 	}
 
@@ -155,6 +159,54 @@ export async function loadDevcontainerConfig(devcontainerUri: vscode.Uri, prefer
 		services,
 		extraMounts
 	};
+}
+
+/**
+ * Resolves the real container ID for a service, so callers can run a plain
+ * `docker exec -it <id> ...` directly (fewer quoting layers than routing an
+ * already-quoted shell command back through `docker compose exec -p ... -f
+ * ...`, which is what Docker Desktop's own "Open in terminal" does too).
+ * Undefined if the service was never created or isn't running.
+ */
+export async function resolveContainerId(config: DevcontainerConfig, serviceName: string): Promise<string | undefined> {
+	const args = composeBaseArgs(config.composeFiles, config.projectName).concat(['ps', '-a', '--format', 'json', serviceName]);
+	let stdout: string;
+	try {
+		({ stdout } = await execFileAsync('docker', ['compose', ...args], { cwd: config.baseDir, maxBuffer: 10 * 1024 * 1024 }));
+	} catch {
+		return undefined;
+	}
+	for (const line of stdout.split('\n')) {
+		const trimmed = line.trim();
+		if (!trimmed) {
+			continue;
+		}
+		try {
+			const entry = JSON.parse(trimmed);
+			if (typeof entry.ID === 'string' && entry.State === 'running') {
+				return entry.ID;
+			}
+		} catch {
+			// invalid line, ignored
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Picks bash if available, falling back to /bin/sh (which every container
+ * has) — resolved as a plain path with a separate, unquoted check, so the
+ * command we eventually hand to an external terminal is exactly as simple
+ * as Docker Desktop's own `docker exec -it <id> /bin/sh`: no `-c`, no `||`,
+ * nothing for a shell (ours or the container's) to possibly misparse.
+ */
+export async function resolveShellPath(containerId: string): Promise<string> {
+	try {
+		await execFileAsync('docker', ['exec', containerId, 'test', '-x', '/bin/bash']);
+		return '/bin/bash';
+	} catch {
+		return '/bin/sh';
+	}
 }
 
 export type ComposeLifecycleAction = 'start' | 'stop' | 'restart';
@@ -544,8 +596,14 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Current status of containers per service (running/exited/paused/...); absent = never created. */
-async function resolveServiceStatuses(composeFiles: string[], cwd: string, projectName: string): Promise<Record<string, string>> {
+interface ServiceRuntimeInfo {
+	status: string;
+	/** Real image tag as reported by the container, used as a fallback for build-based services (no "image" in `docker compose config`). */
+	image?: string;
+}
+
+/** Current status (and, incidentally, real image tag) of containers per service; absent = never created. */
+async function resolveServiceStatuses(composeFiles: string[], cwd: string, projectName: string): Promise<Record<string, ServiceRuntimeInfo>> {
 	const args = composeBaseArgs(composeFiles, projectName).concat(['ps', '-a', '--format', 'json']);
 
 	let stdout: string;
@@ -556,7 +614,7 @@ async function resolveServiceStatuses(composeFiles: string[], cwd: string, proje
 		return {};
 	}
 
-	const statuses: Record<string, string> = {};
+	const statuses: Record<string, ServiceRuntimeInfo> = {};
 	for (const line of stdout.split('\n')) {
 		const trimmed = line.trim();
 		if (!trimmed) {
@@ -565,7 +623,10 @@ async function resolveServiceStatuses(composeFiles: string[], cwd: string, proje
 		try {
 			const entry = JSON.parse(trimmed);
 			if (typeof entry.Service === 'string' && typeof entry.State === 'string') {
-				statuses[entry.Service] = entry.State;
+				statuses[entry.Service] = {
+					status: entry.State,
+					image: typeof entry.Image === 'string' ? entry.Image : undefined
+				};
 			}
 		} catch {
 			// invalid line, ignored

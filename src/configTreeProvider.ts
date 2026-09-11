@@ -80,8 +80,8 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 			}
 			case 'service': {
 				const item = new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.Collapsed);
-				item.description = `${describeServiceRole(element.isMain, element.inRunServices)} · ${describeStatus(element.service.status)}`;
-				item.tooltip = element.service.image;
+				item.description = `${element.service.image ?? 'unknown image'} · ${describeStatus(element.service.status)}`;
+				item.tooltip = `${element.service.image ?? ''}\n${describeServiceRole(element.isMain, element.inRunServices)} · ${describeStatus(element.service.status)}`;
 				item.iconPath = statusIcon(element.service.status);
 				item.contextValue = 'devcontainerGuiService';
 				return item;
