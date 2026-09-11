@@ -1,0 +1,70 @@
+{
+  "name": "vs-code-devcontainer-gui",
+  "displayName": "Devcontainer GUI",
+  "description": "Gestisci in modo semplice le impostazioni dei devcontainer basati su Docker Compose.",
+  "version": "0.0.1",
+  "publisher": "TODO-set-publisher-id",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:.devcontainer/devcontainer.json",
+    "workspaceContains:.devcontainer.json"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devcontainerGui",
+          "title": "Devcontainer",
+          "icon": "resources/devcontainer.svg"
+        }
+      ]
+    },
+    "views": {
+      "devcontainerGui": [
+        {
+          "id": "devcontainerGui.configView",
+          "name": "Configurazione risolta"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "devcontainerGui.refresh",
+        "title": "Devcontainer: aggiorna configurazione",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "devcontainerGui.refresh",
+          "when": "view == devcontainerGui.configView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.2.1",
+    "yaml": "^2.4.5"
+  }
+}
