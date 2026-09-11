@@ -1,9 +1,16 @@
 import * as vscode from 'vscode';
+import { ChildProcess, spawn } from 'child_process';
 import { ConfigTreeProvider, TreeNode, isServiceNode } from './configTreeProvider';
 import { ComposeLifecycleAction, ContainerCandidate, composeBaseArgs, runComposeLifecycleAction } from './devcontainerConfig';
 
+interface LogStream {
+	channel: vscode.OutputChannel;
+	process: ChildProcess;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
 	const configTreeProvider = new ConfigTreeProvider(context);
+	const logStreams = new Map<string, LogStream>();
 
 	const registerLifecycleCommand = (command: string, action: ComposeLifecycleAction) =>
 		vscode.commands.registerCommand(command, (node: TreeNode) => runLifecycleCommand(node, action, configTreeProvider));
@@ -17,7 +24,16 @@ export function activate(context: vscode.ExtensionContext): void {
 		registerLifecycleCommand('devcontainerGui.startService', 'start'),
 		registerLifecycleCommand('devcontainerGui.stopService', 'stop'),
 		registerLifecycleCommand('devcontainerGui.restartService', 'restart'),
-		vscode.commands.registerCommand('devcontainerGui.viewLogs', (node: TreeNode) => viewServiceLogs(node))
+		vscode.commands.registerCommand('devcontainerGui.viewLogs', (node: TreeNode) => viewServiceLogs(node, logStreams)),
+		{
+			dispose() {
+				for (const { process, channel } of logStreams.values()) {
+					process.kill();
+					channel.dispose();
+				}
+				logStreams.clear();
+			}
+		}
 	);
 }
 
@@ -36,20 +52,38 @@ async function runLifecycleCommand(node: TreeNode, action: ComposeLifecycleActio
 	provider.refresh();
 }
 
-function viewServiceLogs(node: TreeNode): void {
+/**
+ * Non usiamo un terminale integrato: anche con extensionKind "ui", i terminali
+ * creati da vscode.window.createTerminal girano nel contesto del workspace
+ * (dentro al container se la finestra è attaccata), mentre `docker compose`
+ * va invocato sull'host con i path host — esattamente come start/stop/restart.
+ * Per lo streaming usiamo quindi un processo host + un Output Channel.
+ */
+function viewServiceLogs(node: TreeNode, logStreams: Map<string, LogStream>): void {
 	if (!isServiceNode(node)) {
 		return;
 	}
-	const args = composeBaseArgs(node.config.composeFiles, node.config.projectName).concat(['logs', '-f', '--tail', '200', node.name]);
-	const commandLine = ['docker', 'compose', ...args].map(quoteForTerminal).join(' ');
 
-	const terminal = vscode.window.createTerminal({ name: `Log: ${node.name}`, cwd: node.config.baseDir });
-	terminal.show();
-	terminal.sendText(commandLine);
-}
+	const key = `${node.config.baseDir}::${node.config.projectName}::${node.name}`;
+	const existing = logStreams.get(key);
+	if (existing) {
+		existing.process.kill();
+		logStreams.delete(key);
+	}
 
-function quoteForTerminal(arg: string): string {
-	return /\s/.test(arg) ? `"${arg}"` : arg;
+	const channel = existing?.channel ?? vscode.window.createOutputChannel(`Devcontainer log: ${node.name}`);
+	channel.clear();
+	channel.show(true);
+
+	const args = ['compose', ...composeBaseArgs(node.config.composeFiles, node.config.projectName), 'logs', '-f', '--tail', '200', node.name];
+	const child = spawn('docker', args, { cwd: node.config.baseDir });
+
+	child.stdout.on('data', (chunk: Buffer) => channel.append(chunk.toString()));
+	child.stderr.on('data', (chunk: Buffer) => channel.append(chunk.toString()));
+	child.on('error', err => channel.appendLine(`\n[errore avvio "docker compose logs": ${err.message}]`));
+	child.on('exit', () => logStreams.delete(key));
+
+	logStreams.set(key, { channel, process: child });
 }
 
 export function deactivate(): void {}
